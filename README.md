@@ -1,7 +1,7 @@
 # title-tag-extractor
 A command line tool to run XPATH queries over the files in a given directory.
 
-##Usage: 
+## Usage: 
 
 `title-tag-extractor [arguments] [options]`
 
@@ -19,7 +19,7 @@ Options:
   -t|--truncate-long-items  When set fits each cell content to the column width. Recommended for queries that return several columns.
 ```
 
-##Example:
+## Example:
 
 *Windows:*
 1. Open a console emulator (cmd is fine also, if you're OK with that)

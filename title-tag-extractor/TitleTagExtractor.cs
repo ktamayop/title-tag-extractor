@@ -32,6 +32,7 @@ namespace TitleTagExtractor
 
         [Argument(0, "src", Description = "The directory to read the xml files from.")]
         [Required(ErrorMessage = "{0} argument is required. Pass . for current directory.")]
+        [DirectoryExists]
         public string Src { get; set; }
 
         [Argument(1, "skip", Description = "The number of files to skip when reading.")]

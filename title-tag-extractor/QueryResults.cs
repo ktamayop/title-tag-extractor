@@ -9,7 +9,7 @@ namespace TitleTagExtractor
 
         public List<string> FileNames { get; } = new List<string>();
 
-        public string[] Headers { get; set; }
+        public string[] Headers { get; set; } = new string[0];
 
         public List<string[,]> Data { get; } = new List<string[,]>();
 

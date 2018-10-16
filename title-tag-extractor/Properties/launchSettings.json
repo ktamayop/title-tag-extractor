@@ -1,0 +1,8 @@
+{
+  "profiles": {
+    "title-tag-extractor": {
+      "commandName": "Project",
+      "commandLineArgs": "C:\\dev\\working\\rosetta\\samples\\providers\\mgm\\items 100 50 -s -d -t //item/PRODUCT_ID"
+    }
+  }
+}

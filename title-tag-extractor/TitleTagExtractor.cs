@@ -1,78 +1,82 @@
 ﻿using System;
+using System.Collections;
 using System.Collections.Generic;
+using System.ComponentModel.DataAnnotations;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
 using System.Xml.Linq;
 using System.Xml.XPath;
-using TitleTagExtractor.Extensions;
+using McMaster.Extensions.CommandLineUtils;
 
 namespace TitleTagExtractor
 {
-    public class Program
+    [Command(Name = "title-tag-extractor", Description = "A command line utility to run xpath queries over the files in a directory.", ThrowOnUnexpectedArgument = false)]
+    [HelpOption("-h|--help")]
+    public class TitleTagExtractor
     {
-        private static void Main(string[] args)
+        static Task<int> Main(string[] args) => CommandLineApplication.ExecuteAsync<TitleTagExtractor>(args);
+
+        [Option("-s|--show-filename", Description = "When set displays the file name of the processed file at the first column of the results table.")]
+        public bool ShowFileName { get; set; }
+
+        [Option("-d|--display-empty-rows", Description = "When set displays the rows even when no results are found.")]
+        public bool DisplayEmptyRows { get; set; }
+
+        [Option("-f|--flatten-results", Description = "When set displays the results flattened for each file. If a query has several results, they'll be displayed on a single line, separated by commas.")]
+        public bool FlattenResults { get; set; }
+
+        [Option("-t|--truncate-long-items", Description = "When set fits each cell content to the column width. Recommended for queries that return several columns.")]
+        public bool TruncateLongItems { get; set; }
+
+        [Argument(0, "src", Description = "The directory to read the xml files from.")]
+        [Required(ErrorMessage = "{0} argument is required. Pass . for current directory.")]
+        public string Src { get; set; }
+
+        [Argument(1, "skip", Description = "The number of files to skip when reading.")]
+        public int Skip { get; set; } = 0;
+
+        [Argument(2, "take", Description = "The max number of files to read.")]
+        public int Take { get; set; }
+
+        public string[] RemainingArguments { get; } //the xpath expressions
+
+        private async Task<int> OnExecuteAsync(CommandLineApplication app)
         {
-            //NOTE: To debug
-#if DEBUG
-            args = new[]{
-                //"-h",
-                "-s", //show file names
-                //"-f", //flatten results,
-                "-t", //truncate long items
-                @"src:C:\dev\working\transformer\samples",
-                "xpaths:(//Synopsis/TypeCode[text()=\"LOGLN\" and ../LanguageCode=\"EN\"])/../*"
-                //"xpaths:(//Synopsis/TypeCode[text()=\"LOGLN\" and ../LanguageCode=\"EN\" and ../SourceId=\"60013830\"])/../*"
-                //"xpaths://Title/TypeCode|//Title/LevelCode"
-            };
-#endif
-
-            new Program()
-                .Run(args);
-
-            Console.WriteLine("\n");
-
-            if (Debugger.IsAttached)
-                Console.ReadLine();
-        }
-
-        private void Run(IEnumerable<string> args)
-        {
-            MainAsync(args.ToList()).GetAwaiter().GetResult();
-        }
-
-        private async Task MainAsync(List<string> argsList)
-        {
-            Debugger.Break();
-
-            var (showFileName, displayEmptyRows, flattenResults, truncateLongItems, xPaths, src) = ParseFlags(argsList);
-            if (src == null)
-                return;
-
-            var dir = new DirectoryInfo(src);
+            var dir = new DirectoryInfo(Src);
             if (!dir.Exists)
             {
-                Console.WriteLine("The source directory was not found.");
-                return;
+                Console.WriteLine($"The source directory {Src} was not found.");
+                return -1;
             }
 
-            var sampleFiles = dir.GetFiles("*.xml", SearchOption.TopDirectoryOnly);
+            var options = new EnumerationOptions
+            {
+                RecurseSubdirectories = false,
+                IgnoreInaccessible = true
+            };
+
+            var sampleFiles = dir.GetFiles("*.xml", options)
+                .Skip(Skip)
+                .Take(Take)
+                .ToArray();
+
             if (!sampleFiles.Any())
             {
                 Console.WriteLine("The source directory contains no xml files.");
-                return;
+                return -1;
             }
 
-            foreach (var xPath in xPaths)
+            foreach (var xPath in RemainingArguments)
             {
                 var queryResults = new QueryResults
                 {
                     Xpath = xPath,
-                    ShowFileNames = showFileName,
-                    DisplayEmptyRows = displayEmptyRows,
-                    FlattenResults = flattenResults,
-                    TruncateLongItems = truncateLongItems
+                    ShowFileNames = ShowFileName,
+                    DisplayEmptyRows = DisplayEmptyRows,
+                    FlattenResults = FlattenResults,
+                    TruncateLongItems = TruncateLongItems
                 };
 
                 foreach (var file in sampleFiles)
@@ -81,24 +85,32 @@ namespace TitleTagExtractor
                     {
                         var doc = await GetXDocument(file);
 
-                        var elementGroups = doc.XPathSelectElements(xPath)
-                            .GroupBy(x => x.Name)
+                        var els = ((IEnumerable)doc.XPathEvaluate(xPath))
+                            .OfType<XElement>()
+                            .Select(e => new { e.Name, e.Value });
+
+                        var attrs = ((IEnumerable)doc.XPathEvaluate(xPath))
+                            .OfType<XAttribute>()
+                            .Select(e => new { e.Name, e.Value });
+
+                        var items = els.Union(attrs)
+                            .GroupBy(x => x, e => e.Value)
                             .ToList();
 
                         //add the headers only once. They're all the same for each xpath.
-                        if (queryResults.Headers == null && elementGroups.Any())
-                            queryResults.Headers = elementGroups
-                                .Select(e => e.Key.LocalName.ToString())
+                        if (!queryResults.Headers.Any() && items.Any())
+                            queryResults.Headers = items
+                                .Select(e => e.Key.Name.LocalName.ToString())
                                 .ToArray();
 
                         //add the file name
                         queryResults.FileNames.Add(file.Name);
 
-                        var elements = elementGroups
+                        var elements = items
                             .Select(g => g.ToList())
                             .ToList();
 
-                        if (!elementGroups.Any())
+                        if (!items.Any())
                         {
                             //add an empty matrix. This file has no matches.
                             queryResults.Data.Add(new string[0, 0]);
@@ -112,7 +124,7 @@ namespace TitleTagExtractor
 
                         for (var i = 0; i < totalRows; i++)
                             for (var j = 0; j < totalColumns; j++)
-                                matrix[i, j] = elements[j][i].Value;
+                                matrix[i, j] = elements[j][i];
 
                         //add this matrix (file results) to the results (xpath query)
                         queryResults.Data.Add(matrix);
@@ -123,9 +135,11 @@ namespace TitleTagExtractor
                     }
                 }
 
-                AssembleResults(queryResults, showFileName);
+                AssembleResults(queryResults, ShowFileName);
                 Console.WriteLine();
             }
+
+            return 0;
         }
 
         private static void AssembleResults(QueryResults queryResults, bool showFileName)
@@ -160,7 +174,7 @@ namespace TitleTagExtractor
                         {
                             var value = matrix[row, col];
                             if (!string.IsNullOrEmpty(value))
-                                colValues.Add((value ?? "").Replace("\n", "").Replace("\r", ""));
+                                colValues.Add(value.Replace("\n", "").Replace("\r", ""));
                         }
 
                         flattenedMatrix[0, col] = string.Join(", ", colValues.Distinct());
@@ -188,7 +202,10 @@ namespace TitleTagExtractor
             //calculate the length of the largest item in each column
             var totalRows = matrix.GetLength(0);
             var totalCols = matrix.GetLength(1);
-            var paddingData = new(int col, int length, int padding)[totalCols];
+            if (totalCols == 0)
+                return;
+
+            var paddingData = new (int col, int length, int padding)[totalCols];
             var startRow = queryResults.TruncateLongItems ? 1 : 0;
 
             for (var col = 0; col < totalCols; col++)
@@ -209,7 +226,7 @@ namespace TitleTagExtractor
             }
 
             //sort the columns ascending so we resolve padding to accomodate 
-            //the shortest column first and leave the remainding space to the largest columns.
+            //the shortest column first and leave the remaining space to the largest columns.
             paddingData = paddingData.OrderBy(x => x.length).ToArray();
 
             //start resolving the padding for the columns
@@ -222,7 +239,7 @@ namespace TitleTagExtractor
                 var padding = Math.Min(maxColumnPadding, paddingData[i].length);
                 paddingData[i].padding += padding;
 
-                //substract the space needed for this column of the available space and recalculate the max column padding with one column less.
+                //subtract the space needed for this column of the available space and recalculate the max column padding with one column less.
                 availableSpace -= padding;
                 columnsToDistribute--;
 
@@ -254,7 +271,19 @@ namespace TitleTagExtractor
         {
             for (var i = 0; i < sourceMatrix.GetLength(0); i++)
                 for (var j = 0; j < sourceMatrix.GetLength(1); j++)
-                    targetMatrix[i + rowOffset, j + colOffset] = (sourceMatrix[i, j] ?? "").Replace("\n", "").Replace("\r", "");
+                {
+                    var row = i + rowOffset;
+                    var col = j + colOffset;
+
+                    var value = (sourceMatrix[i, j] ?? "").Replace("\n", "").Replace("\r", "");
+                    if (row >= targetMatrix.GetLength(0) || col >= targetMatrix.GetLength(1))
+                    {
+                        Debug.WriteLine($"Some items were not displayed because the data shape is different: {value}");
+                        continue;
+                    }
+
+                    targetMatrix[row, col] = value;
+                }
         }
 
         private static void PrintMatrix(string[,] matrix, QueryResults queryResults)
@@ -302,64 +331,6 @@ namespace TitleTagExtractor
             PrintLine(ref cursorTopOffset, content: $"Displaying {count - 1} out of {matrix.GetLength(0) - 1} total items.", lineSeparatorMode: LineSeparatorMode.BeforeContent);
         }
 
-        private (bool showFileName, bool displayEmptyRows, bool flattenResults, bool truncateLongItems, string[] xPaths, string src) ParseFlags(List<string> argsList)
-        {
-            var help = argsList.Contains("-h") || argsList.Contains("--help");
-            if (help)
-            {
-                ShowUsage();
-                return (false, false, false, false, null, null);
-            }
-
-            Console.WriteLine("\n" +
-                              $"Title Tag Extractor v.{this.GetApplicationVersion()}" +
-                              "\n-------------------------------" +
-                              "\n");
-
-            // Parse all the flags.
-            var showFileName = ProcessFlag(argsList, "-s", false);
-            if (!showFileName)
-                showFileName = ProcessFlag(argsList, "--show-filename", false);
-
-            var displayEmptyRows = ProcessFlag(argsList, "-d", false);
-            if (!displayEmptyRows)
-                displayEmptyRows = ProcessFlag(argsList, "--display-empty-rows", false);
-
-            var flattenResults = ProcessFlag(argsList, "--flatten-results", false);
-            if (!flattenResults)
-                flattenResults = ProcessFlag(argsList, "-f", false);
-
-            var truncateLongItems = ProcessFlag(argsList, "--truncate-long-items", false);
-            if (!truncateLongItems)
-                truncateLongItems = ProcessFlag(argsList, "-t", false);
-
-            var src = ProcessFlag(argsList, "src:", ".");
-
-            var xPaths = ProcessArrayFlag<string>(argsList, "xpaths:");
-
-            //return
-            return (showFileName, displayEmptyRows, flattenResults, truncateLongItems, xPaths, src);
-        }
-
-        private static void ShowUsage()
-        {
-            Console.WriteLine(
-                "Usage: title-tag-extractor [options]" +
-                "\n" +
-                "\nOptions:" +
-                "\n-h, --help                               Show help information." +
-                "\n-s, --show-filename                      Set this flag to display the file name of the processed file at the first column of the results table." +
-                "\n-d, --display-empty-rows                 Set this flag to display the rows even when no results are found." +
-                "\n-f, --flatten-results                    Set this flag to display the results flattened for each file. If a query has several results, they'll be displayed on a single line, separated by commas." +
-                "\n-t, --truncate-long-items                Set this flag to fit each cell content to the column width. Recommended for queries that return several columns." +
-                "\nsrc:<SRC_DIR>                            The directory to read the xml files from. Defaults to Current Dir." +
-                "\nxpaths:<XPATH_EXP>[\\<XPATH_EXP>]         The XPAth expression (or expressions) to run over the xml files in the src dir. " +
-                "\n                                         You can pass one or several back-slash-separated expressions here." +
-                "\n                                         Example: //Title/Id|//Title/Name" +
-                "\n                                         This will show a two-column table with Id | Name columns for each sample file on the source dir." +
-                "\n");
-        }
-
         private static void PrintLine(ref int cursorTop, string header = null, object content = null, LineSeparatorMode lineSeparatorMode = LineSeparatorMode.None)
         {
             if (lineSeparatorMode == LineSeparatorMode.BeforeContent)
@@ -403,57 +374,5 @@ namespace TitleTagExtractor
 
             return doc;
         }
-
-        private static T ProcessFlag<T>(List<string> args, string flagPrefix, T defaultValue)
-        {
-            T value;
-            var flagContext = args.FirstOrDefault(a => a.StartsWith(flagPrefix));
-            if (!string.IsNullOrEmpty(flagContext))
-            {
-                var trimmedArg = flagContext?.Replace(flagPrefix, "").Trim();
-
-                //for a bool flag, just return true if it's present, false otherwise.
-                if (typeof(T) == typeof(bool))
-                    trimmedArg = "true";
-
-                value = (T)Convert.ChangeType(trimmedArg, typeof(T));
-
-                //delete the arg from the list
-                args.RemoveAll(x => x.StartsWith(flagPrefix));
-            }
-            else
-                value = defaultValue;
-
-            return value;
-        }
-
-        private static T[] ProcessArrayFlag<T>(List<string> args, string flagPrefix)
-        {
-            var result = new List<T>();
-            var flagContext = args.FirstOrDefault(a => a.StartsWith(flagPrefix));
-            if (!string.IsNullOrEmpty(flagContext))
-            {
-                var trimmedArg = flagContext?
-                    .Replace(flagPrefix, "")
-                    .Trim();
-
-                //split the value by " "
-                var tokens = trimmedArg?.Split("\\", StringSplitOptions.RemoveEmptyEntries)
-                    .Select(t => t.Trim('"').Trim());
-                result.AddRange(tokens?.Select(token => (T)Convert.ChangeType(token, typeof(T))));
-
-                //delete the arg from the list
-                args.RemoveAll(x => x.StartsWith(flagPrefix));
-            }
-
-            return result.ToArray();
-        }
-    }
-
-    internal enum LineSeparatorMode
-    {
-        None,
-        BeforeContent,
-        AfterContent
     }
 }

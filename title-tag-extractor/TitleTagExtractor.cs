@@ -198,7 +198,86 @@ namespace TitleTagExtractor
             PrintMatrix(mergedMatrix, queryResults);
         }
 
-        private static void CalculateColumnPaddings(string[,] matrix, QueryResults queryResults)
+        private static void private static void CalculateColumnPaddings(string[,] matrix, QueryResults queryResults)
+{
+    if (matrix.GetLength(1) == 0) return;
+
+    var largestItemLengths = GetLargestItemLengthForEachColumn(matrix);
+    var paddedColumns = GetSortedPaddings(largestItemLengths);
+
+    var columnPaddings = CalculateColumnPaddings(paddedColumns, matrix.GetLength(1), Console.BufferWidth);
+    var totalSpace = columnPaddings.Sum();
+
+    while (totalSpace > Console.BufferWidth - matrix.GetLength(1) + 1)
+    {
+        columnPaddings = AdjustColumnPaddings(columnPaddings);
+        totalSpace = columnPaddings.Sum();
+    }
+
+    queryResults.ColumnPaddings.AddRange(columnPaddings);
+}
+
+private static int[] GetLargestItemLengthForEachColumn(string[,] matrix)
+{
+    var results = new int[matrix.GetLength(1)];
+
+    for (var col = 0; col < matrix.GetLength(1); col++)
+    {
+        var largestLengthForColumn = 0;
+        
+        for (var row = matrix.GetLength(1) == 1 ? 0 : 1; row < matrix.GetLength(0); row++)
+        {   
+            if (matrix[row, col] != null && matrix[row, col].Length > largestLengthForColumn)
+            {
+                largestLengthForColumn = matrix[row, col].Length;
+            }
+        }
+
+        results[col] = largestLengthForColumn;
+    }
+
+    return results;
+}
+
+private static List<(int Col, int Length, int Padding)> GetSortedPaddings(int[] largestItemLengths)
+{
+    var results = largestItemLengths.Select((len, col) => (col, len, 0)).ToList();
+    results.Sort((a, b) => a.Length.CompareTo(b.Length));
+    return results;
+}
+
+private static List<int> CalculateColumnPaddings(List<(int Col, int Length, int Padding)> sortedPaddings, int numColumns, int availableSpace)
+{
+    var columnPaddings = new List<int>(numColumns);
+    var columnsToDistribute = numColumns;
+
+    for (var i = 0; i < sortedPaddings.Count; i++)
+    {
+        var currentPadding = Math.Min(availableSpace / columnsToDistribute, sortedPaddings[i].Length);
+        columnPaddings.Add(currentPadding);
+        availableSpace -= currentPadding;
+        columnsToDistribute--;
+    }
+
+    return columnPaddings;
+}
+
+private static List<int> AdjustColumnPaddings(List<int> columnPaddings)
+{
+    var paddings = columnPaddings.ToList();
+
+    for (var i = 0; i < paddings.Count; i++)
+    {
+        if (paddings[i] > 2)
+        {
+            paddings[i]--;
+            break;
+        }
+    }
+
+    return paddings;
+}
+string[,] matrix, QueryResults queryResults)
         {
             //calculate the length of the largest item in each column
             var totalRows = matrix.GetLength(0);

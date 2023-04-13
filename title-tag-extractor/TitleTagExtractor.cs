@@ -198,7 +198,67 @@ namespace TitleTagExtractor
             PrintMatrix(mergedMatrix, queryResults);
         }
 
-        private static void CalculateColumnPaddings(string[,] matrix, QueryResults queryResults)
+        private static void private static void CalculateColumnPaddings(string[,] matrix, QueryResults queryResults)
+{
+    // Calculate the length of the largest item in each column
+    var totalRows = matrix.GetLength(0);
+    var totalCols = matrix.GetLength(1);
+    
+    if (totalCols == 0)
+    {
+        return;
+    }
+
+    var columnData = new Dictionary<int, (int maxLength, int padding)>();
+    var startRow = queryResults.TruncateLongItems ? 1 : 0;
+
+    for (var col = 0; col < totalCols; col++)
+    {
+        var max = 0;
+
+        // Ignore the headers for the calculation
+        for (var row = startRow; row < totalRows; row++)
+        {
+            var item = matrix[row, col] ?? "";
+            max = Math.Max(max, item.Length);
+        }
+
+        // max is the length of the largest element in the column
+        columnData.Add(col, (maxLength: max, padding: 0));
+    }
+
+    // Sort the columns ascending so we resolve padding to accommodate
+    // the shortest column first and leave the remaining space to the largest columns.
+    var orderedColumnData = columnData.OrderBy(x => x.Value.maxLength).ToList();
+
+    // Start resolving the padding for the columns
+    var availableSpace = Console.BufferWidth - totalCols + 1;
+    var totalRequiredPadding = orderedColumnData.Sum(x => x.Value.maxLength);
+    var numColumns = orderedColumnData.Count;
+    var paddingPerColumn = (int)Math.Round((decimal)(availableSpace - totalRequiredPadding) / numColumns);
+
+    for (var i = 0; i < orderedColumnData.Count; i++)
+    {
+        var column = orderedColumnData[i].Key;
+        var maxLength = orderedColumnData[i].Value.maxLength;
+        var padding = Math.Min(maxLength, paddingPerColumn);
+        columnData[column] = (maxLength: maxLength, padding: padding);
+    }
+
+    // Increase padding to accommodate any remaining available space
+    var totalPadding = columnData.Sum(x => x.Value.padding);
+    var remainingPadding = availableSpace - (totalPadding + totalCols - 1);
+    
+    for (var i = 0; i < remainingPadding; i++)
+    {
+        var column = columnData.OrderByDescending(x => x.Value.maxLength).First().Key;
+        var currentPadding = columnData[column].padding;
+        columnData[column] = (maxLength: columnData[column].maxLength, padding: currentPadding + 1);
+    }
+
+    queryResults.ColumnPaddings.AddRange(columnData.OrderBy(x => x.Key).Select(x => x.Value.padding).ToArray());
+}
+string[,] matrix, QueryResults queryResults)
         {
             //calculate the length of the largest item in each column
             var totalRows = matrix.GetLength(0);

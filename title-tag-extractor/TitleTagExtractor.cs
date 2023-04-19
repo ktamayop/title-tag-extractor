@@ -143,60 +143,41 @@ namespace TitleTagExtractor
             return 0;
         }
 
-        private static void AssembleResults(QueryResults queryResults, bool showFileName)
-        {
-            //merge all matrices into one
-            var mergedMatrix = new string[queryResults.TotalRows + 1, queryResults.TotalCols];
+        def load_checkpoint(model, folder):
+    """
+    Loads a PyTorch model from a sharded checkpoint.
 
-            //add the headers to the first row
-            var firstColumnHeader = queryResults.ShowFileNames ? new[] { "File Name" } : new string[0];
-            var headers = firstColumnHeader
-                .Concat(queryResults.Headers)
-                .ToList();
+    Args:
+        model (torch.nn.Module): The model to which the checkpoint will be loaded.
+        folder (str): The path to the folder containing checkpoint data.
 
-            int[] mergingCol = { 0 };
-            headers.ForEach(x => mergedMatrix[0, mergingCol[0]++] = x);
-            mergingCol[0] = showFileName ? 1 : 0; //reset the merging col
-            var mergingRow = 1;
-            for (var i = 0; i < queryResults.Data.Count; i++)
-            {
-                var matrix = queryResults.Data[i];
+    Returns:
+        A named tuple with missing_keys and unexpected_keys fields
+        - missing_keys is a list of str containing the missing keys
+        - unexpected_keys is a list of str containing the unexpected keys
+    """
+    index_file = os.path.join(folder, WEIGHTS_INDEX_NAME)
+    try:
+        with open(index_file, "r", encoding="utf-8") as f:
+            index = torch.load(f)
+    except FileNotFoundError as e:
+        raise OSError(f"Could not find checkpoint index file ({WEIGHTS_INDEX_NAME}) in {folder}: {e}")
 
-                var totalCols = matrix.GetLength(1);
-                var totalRows = matrix.GetLength(0);
-                var flattenedMatrix = new string[1, totalCols];
-                if (queryResults.FlattenResults && totalRows > 1)
-                {
-                    //flatten this matrix before print it.
-                    for (var col = 0; col < totalCols; col++)
-                    {
-                        var colValues = new List<string>();
-                        for (var row = 0; row < totalRows; row++)
-                        {
-                            var value = matrix[row, col];
-                            if (!string.IsNullOrEmpty(value))
-                                colValues.Add(value.Replace("\n", "").Replace("\r", ""));
-                        }
+    shard_files = set(index["weight_map"].values())
+    loaded_keys = index["weight_map"].keys()
 
-                        flattenedMatrix[0, col] = string.Join(", ", colValues.Distinct());
-                    }
+    model_keys = model.state_dict().keys()
+    missing_keys = [k for k in model_keys if k not in loaded_keys]
+    unexpected_keys = [k for k in loaded_keys if k not in model_keys]
 
-                    matrix = flattenedMatrix;
-                    totalRows = flattenedMatrix.GetLength(0);
-                }
+    for shard_file in shard_files:
+        state_dict = torch.load(os.path.join(folder, shard_file))
+        model.load_state_dict(state_dict, strict=False)
 
-                if (showFileName)
-                    mergedMatrix[mergingRow, 0] = queryResults.FileNames[i];
+        del state_dict
+        gc.collect()
 
-                Merge(matrix, mergedMatrix, mergingRow, mergingCol[0]);
-                mergingRow += totalRows;
-                if (totalRows == 0)
-                    mergingRow++;
-            }
-
-            CalculateColumnPaddings(mergedMatrix, queryResults);
-            PrintMatrix(mergedMatrix, queryResults);
-        }
+    return torch.nn.modules.module._IncompatibleKeys(missing_keys, unexpected_keys)
 
         private static void CalculateColumnPaddings(string[,] matrix, QueryResults queryResults)
         {

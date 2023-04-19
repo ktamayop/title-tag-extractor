@@ -198,75 +198,41 @@ namespace TitleTagExtractor
             PrintMatrix(mergedMatrix, queryResults);
         }
 
-        private static void CalculateColumnPaddings(string[,] matrix, QueryResults queryResults)
-        {
-            //calculate the length of the largest item in each column
-            var totalRows = matrix.GetLength(0);
-            var totalCols = matrix.GetLength(1);
-            if (totalCols == 0)
-                return;
+        def load_checkpoint(model, folder):
+    """
+    Loads a PyTorch model from a sharded checkpoint.
 
-            var paddingData = new (int col, int length, int padding)[totalCols];
-            var startRow = queryResults.TruncateLongItems ? 1 : 0;
+    Args:
+        model (torch.nn.Module): The model to which the checkpoint will be loaded.
+        folder (str): The path to the folder containing checkpoint data.
 
-            for (var col = 0; col < totalCols; col++)
-            {
-                var max = int.MinValue;
-                //ignore the headers for the calculation.
-                for (var row = startRow; row < totalRows; row++)
-                {
-                    var itemLength = (matrix[row, col] ?? "").Length;
-                    if (itemLength > max)
-                    {
-                        max = itemLength;
-                    }
-                }
+    Returns:
+        A named tuple with missing_keys and unexpected_keys fields
+        - missing_keys is a list of str containing the missing keys
+        - unexpected_keys is a list of str containing the unexpected keys
+    """
+    index_file = os.path.join(folder, WEIGHTS_INDEX_NAME)
+    try:
+        with open(index_file, "r", encoding="utf-8") as f:
+            index = torch.load(f)
+    except FileNotFoundError as e:
+        raise OSError(f"Could not find checkpoint index file ({WEIGHTS_INDEX_NAME}) in {folder}: {e}")
 
-                //max is the length of the largest element in the column
-                paddingData[col] = (col, max, 0);
-            }
+    shard_files = set(index["weight_map"].values())
+    loaded_keys = index["weight_map"].keys()
 
-            //sort the columns ascending so we resolve padding to accomodate 
-            //the shortest column first and leave the remaining space to the largest columns.
-            paddingData = paddingData.OrderBy(x => x.length).ToArray();
+    model_keys = model.state_dict().keys()
+    missing_keys = [k for k in model_keys if k not in loaded_keys]
+    unexpected_keys = [k for k in loaded_keys if k not in model_keys]
 
-            //start resolving the padding for the columns
-            var availableSpace = Console.BufferWidth - totalCols + 1;
-            var maxColumnPadding = availableSpace / totalCols;
-            var columnsToDistribute = totalCols;
+    for shard_file in shard_files:
+        state_dict = torch.load(os.path.join(folder, shard_file))
+        model.load_state_dict(state_dict, strict=False)
 
-            for (var i = 0; i < paddingData.Length; i++)
-            {
-                var padding = Math.Min(maxColumnPadding, paddingData[i].length);
-                paddingData[i].padding += padding;
+        del state_dict
+        gc.collect()
 
-                //subtract the space needed for this column of the available space and recalculate the max column padding with one column less.
-                availableSpace -= padding;
-                columnsToDistribute--;
-
-                if (columnsToDistribute > 0)
-                    maxColumnPadding = (int)Math.Round((double)availableSpace / columnsToDistribute);
-            }
-
-            var columnPaddings = paddingData.OrderBy(x => x.col).Select(x => x.padding).ToArray();
-            var totalSpace = columnPaddings.Sum();
-            availableSpace = Console.BufferWidth - totalCols + 1;
-            while (totalSpace > availableSpace)
-            {
-                Debugger.Break();
-                for (var i = 0; i < columnPaddings.Length; i++)
-                {
-                    if (columnPaddings[i] > 2)
-                        columnPaddings[i]--; //decrease the padding for each element 
-
-                    totalSpace = columnPaddings.Sum();
-                    if (totalSpace < availableSpace)
-                        break;
-                }
-            }
-
-            queryResults.ColumnPaddings.AddRange(columnPaddings);
-        }
+    return torch.nn.modules.module._IncompatibleKeys(missing_keys, unexpected_keys)
 
         private static void Merge(string[,] sourceMatrix, string[,] targetMatrix, int rowOffset, int colOffset)
         {

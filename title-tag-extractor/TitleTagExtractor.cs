@@ -287,50 +287,41 @@ namespace TitleTagExtractor
                 }
         }
 
-        private static void PrintMatrix(string[,] matrix, QueryResults queryResults)
-        {
-            //only set cursor position if we display all values as they are. If -t is set we don't allow redirection through | tee log.txt for instance.
-            var cursorTopOffset = queryResults.TruncateLongItems ? Console.CursorTop : -1;
-            PrintLine(ref cursorTopOffset, "XPATH", queryResults.Xpath, LineSeparatorMode.AfterContent);
+        def load_checkpoint(model, folder):
+    """
+    Loads a PyTorch model from a sharded checkpoint.
 
-            var count = 0;
-            for (var i = 0; i < matrix.GetLength(0); i++)
-            {
-                //print all row items.
-                var rowItems = new string[matrix.GetLength(1)];
-                for (var j = 0; j < matrix.GetLength(1); j++)
-                {
-                    //fill the file name if the first column is empty.
-                    if (queryResults.ShowFileNames && string.IsNullOrEmpty(matrix[i, 0]))
-                        matrix[i, 0] = matrix[i - 1, 0];
+    Args:
+        model (torch.nn.Module): The model to which the checkpoint will be loaded.
+        folder (str): The path to the folder containing checkpoint data.
 
-                    var item = matrix[i, j] ?? "";
-                    if (queryResults.TruncateLongItems && item.Length > queryResults.ColumnPaddings[j])
-                        item = item.Substring(0, queryResults.ColumnPaddings[j]);
+    Returns:
+        A named tuple with missing_keys and unexpected_keys fields
+        - missing_keys is a list of str containing the missing keys
+        - unexpected_keys is a list of str containing the unexpected keys
+    """
+    index_file = os.path.join(folder, WEIGHTS_INDEX_NAME)
+    try:
+        with open(index_file, "r", encoding="utf-8") as f:
+            index = torch.load(f)
+    except FileNotFoundError as e:
+        raise OSError(f"Could not find checkpoint index file ({WEIGHTS_INDEX_NAME}) in {folder}: {e}")
 
-                    rowItems[j] = item.PadRight(queryResults.ColumnPaddings[j]);
-                }
+    shard_files = set(index["weight_map"].values())
+    loaded_keys = index["weight_map"].keys()
 
-                var emptyRow = rowItems
-                    .Skip(queryResults.ShowFileNames ? 1 : 0)
-                    .Select(x => x.Trim())
-                    .All(string.IsNullOrEmpty);
+    model_keys = model.state_dict().keys()
+    missing_keys = [k for k in model_keys if k not in loaded_keys]
+    unexpected_keys = [k for k in loaded_keys if k not in model_keys]
 
-                if (!queryResults.DisplayEmptyRows && emptyRow)
-                    continue;
+    for shard_file in shard_files:
+        state_dict = torch.load(os.path.join(folder, shard_file))
+        model.load_state_dict(state_dict, strict=False)
 
-                var row = string.Join("|", rowItems);
-                PrintLine(ref cursorTopOffset, content: $"{row}");
-                count++;
+        del state_dict
+        gc.collect()
 
-                //print a line after the header row
-                if (i == 0)
-                    PrintLine(ref cursorTopOffset, lineSeparatorMode: LineSeparatorMode.BeforeContent);
-            }
-
-            //subtract 1 to not count header row as an item.
-            PrintLine(ref cursorTopOffset, content: $"Displaying {count - 1} out of {matrix.GetLength(0) - 1} total items.", lineSeparatorMode: LineSeparatorMode.BeforeContent);
-        }
+    return torch.nn.modules.module._IncompatibleKeys(missing_keys, unexpected_keys)
 
         private static void PrintLine(ref int cursorTop, string header = null, object content = null, LineSeparatorMode lineSeparatorMode = LineSeparatorMode.None)
         {

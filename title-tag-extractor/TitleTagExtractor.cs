@@ -43,103 +43,113 @@ namespace TitleTagExtractor
 
         public string[] RemainingArguments { get; } //the xpath expressions
 
-        private async Task<int> OnExecuteAsync(CommandLineApplication app)
-        {
-            var dir = new DirectoryInfo(Src);
-            if (!dir.Exists)
+        readonly Config config = new Config
             {
-                Console.WriteLine($"The source directory {Src} was not found.");
+                SourceDirectory = "directory",
+                Skip = 0,
+                Take = 10,
+                RemainingArguments = new string[] { "Xpath" }
+            };
+
+private async ValueTask<int> OnExecuteAsync(CommandLineApplication app)
+        {
+            var folder = new DirectoryInfo(config.SourceDirectory);
+
+            if (!folder.Exists)
+            {
+                Console.WriteLine($"The folder {folder.FullName} was not found.");
                 return -1;
             }
 
             var options = new EnumerationOptions
             {
-                RecurseSubdirectories = false,
-                IgnoreInaccessible = true
+                IgnoreInaccessible = true,
+                RecurseSubdirectories = false
             };
 
-            var sampleFiles = dir.GetFiles("*.xml", options)
-                .Skip(Skip)
-                .Take(Take)
+            var files = folder.GetFiles("*.xml", options)
+                .Skip(config.Skip)
+                .Take(config.Take)
                 .ToArray();
 
-            if (!sampleFiles.Any())
+            if (!files.Any())
             {
-                Console.WriteLine("The source directory contains no xml files.");
+                Console.WriteLine("No XML files found.");
                 return -1;
             }
 
-            foreach (var xPath in RemainingArguments)
+            var queryResults = new List<QueryResults>();
+
+            foreach (var xpath in config.RemainingArguments)
             {
-                var queryResults = new QueryResults
+                if (queryResults.Any(x => x.Xpath == xpath))
                 {
-                    Xpath = xPath,
-                    ShowFileNames = ShowFileName,
-                    DisplayEmptyRows = DisplayEmptyRows,
-                    FlattenResults = FlattenResults,
-                    TruncateLongItems = TruncateLongItems
+                    Console.WriteLine($"The xpath '{xpath}' has already been queried before. Skipping...");
+                    continue;
+                }
+
+                var queryResult = new QueryResults
+                {
+                    Xpath = xpath,
+                    ShowFileNames = true,
+                    DisplayEmptyRows = true,
+                    FlattenResults = true,
+                    TruncateLongItems = true,
+                    Headers = new string[0]
                 };
 
-                foreach (var file in sampleFiles)
+                foreach (var file in files)
                 {
                     try
                     {
                         var doc = await GetXDocument(file);
+                        var els = doc.XPathSelectElements(xpath);
+                        var attributes = els.Attributes();
 
-                        var els = ((IEnumerable)doc.XPathEvaluate(xPath))
-                            .OfType<XElement>()
-                            .Select(e => new { e.Name, e.Value });
+                        var queryData = els
+                            .SelectMany(element => element.Attributes().Concat(element.Elements()))
+                            .Where(element => element != null)
+                            .Select(element =>
+                            {
+                                var value = element.Value;
+                                if (queryResult.TruncateLongItems && value.Length > MaxTextLength)
+                                {
+                                    value = value.Substring(0, MaxTextLength) + "...";
+                                }
+                                return new KeyValuePair<string, string>(element.Name.LocalName, value);
+                            })
+                            .GroupBy(kvp => kvp.Key, kvp => kvp.Value)
+                            .ToDictionary(gdc => gdc.Key, gdc => gdc.ToArray());
 
-                        var attrs = ((IEnumerable)doc.XPathEvaluate(xPath))
-                            .OfType<XAttribute>()
-                            .Select(e => new { e.Name, e.Value });
+                        if (!queryResult.Headers.Any() && queryData.Any())
+                            queryResult.Headers = queryData.Keys.ToArray();
 
-                        var items = els.Union(attrs)
-                            .GroupBy(x => x, e => e.Value)
-                            .ToList();
+                        queryResult.FileNames.Add(file.Name);
 
-                        //add the headers only once. They're all the same for each xpath.
-                        if (!queryResults.Headers.Any() && items.Any())
-                            queryResults.Headers = items
-                                .Select(e => e.Key.Name.LocalName.ToString())
-                                .ToArray();
-
-                        //add the file name
-                        queryResults.FileNames.Add(file.Name);
-
-                        var elements = items
-                            .Select(g => g.ToList())
-                            .ToList();
-
-                        if (!items.Any())
+                        if (!queryData.Any())
                         {
-                            //add an empty matrix. This file has no matches.
-                            queryResults.Data.Add(new string[0, 0]);
+                            queryResult.Data.Add(new string[0]);
                             continue;
                         }
 
-                        //create the matrix for this file
-                        var totalRows = elements[0].Count;
-                        var totalColumns = elements.Count;
-                        var matrix = new string[totalRows, totalColumns];
-
-                        for (var i = 0; i < totalRows; i++)
-                            for (var j = 0; j < totalColumns; j++)
-                                matrix[i, j] = elements[j][i];
-
-                        //add this matrix (file results) to the results (xpath query)
-                        queryResults.Data.Add(matrix);
+                        var row = queryResult.Headers.Select(header => queryData[header][0]).ToArray();
+                        queryResult.Data.Add(row);
                     }
                     catch (Exception e)
                     {
-                        Console.WriteLine($"{file.Name} -> Failed!. Error: {e.Message}");
+                        Console.WriteLine($"{file.Name} failed! Error: {e.Message}");
                     }
                 }
-
-                AssembleResults(queryResults, ShowFileName);
-                Console.WriteLine();
+                queryResults.Add(queryResult);
             }
 
+            var json = JsonSerializer.Serialize(queryResults, new JsonSerializerOptions
+            {
+                WriteIndented = true,
+                Converters = { new StringArrayConverter() },
+                IgnoreNullValues = true
+            });
+            Console.WriteLine(json);
             return 0;
         }
 

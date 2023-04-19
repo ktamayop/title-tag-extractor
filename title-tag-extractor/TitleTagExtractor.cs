@@ -44,104 +44,100 @@ namespace TitleTagExtractor
         public string[] RemainingArguments { get; } //the xpath expressions
 
         private async Task<int> OnExecuteAsync(CommandLineApplication app)
-        {
-            var dir = new DirectoryInfo(Src);
-            if (!dir.Exists)
-            {
-                Console.WriteLine($"The source directory {Src} was not found.");
-                return -1;
-            }
+{
+    try
+    {
+        var dirPath = new DirectoryInfo(Src);
 
-            var options = new EnumerationOptions
+        if (!dirPath.Exists)
+        {
+            Console.WriteLine($"The source directory {Src} was not found.");
+            return -1;
+        }
+
+        var options = new EnumerationOptions
+        {
+            RecurseSubdirectories = false,
+            IgnoreInaccessible = true
+        };
+
+        var xmlFiles = await Task.Run(() => dirPath.GetFiles("*.xml", options)
+                                                  .Skip(Skip)
+                                                  .Take(Take)
+                                                  .ToArray());
+
+        if (!xmlFiles.Any())
+        {
+            Console.WriteLine("The source directory contains no xml files.");
+            return -1;
+        }
+
+        foreach (var xPath in RemainingArguments)
+        {
+            var queryResults = new QueryResults
             {
-                RecurseSubdirectories = false,
-                IgnoreInaccessible = true
+                Xpath = xPath,
+                ShowFileNames = ShowFileName,
+                DisplayEmptyRows = DisplayEmptyRows,
+                FlattenResults = FlattenResults,
+                TruncateLongItems = TruncateLongItems
             };
 
-            var sampleFiles = dir.GetFiles("*.xml", options)
-                .Skip(Skip)
-                .Take(Take)
-                .ToArray();
-
-            if (!sampleFiles.Any())
-            {
-                Console.WriteLine("The source directory contains no xml files.");
-                return -1;
-            }
-
-            foreach (var xPath in RemainingArguments)
-            {
-                var queryResults = new QueryResults
+            var tasks = xmlFiles
+                .Select(async file =>
                 {
-                    Xpath = xPath,
-                    ShowFileNames = ShowFileName,
-                    DisplayEmptyRows = DisplayEmptyRows,
-                    FlattenResults = FlattenResults,
-                    TruncateLongItems = TruncateLongItems
-                };
+                    XElement[] elements = null;
+                    XAttribute[] attributes = null;
 
-                foreach (var file in sampleFiles)
-                {
                     try
                     {
-                        var doc = await GetXDocument(file);
-
-                        var els = ((IEnumerable)doc.XPathEvaluate(xPath))
-                            .OfType<XElement>()
-                            .Select(e => new { e.Name, e.Value });
-
-                        var attrs = ((IEnumerable)doc.XPathEvaluate(xPath))
-                            .OfType<XAttribute>()
-                            .Select(e => new { e.Name, e.Value });
-
-                        var items = els.Union(attrs)
-                            .GroupBy(x => x, e => e.Value)
-                            .ToList();
-
-                        //add the headers only once. They're all the same for each xpath.
-                        if (!queryResults.Headers.Any() && items.Any())
-                            queryResults.Headers = items
-                                .Select(e => e.Key.Name.LocalName.ToString())
-                                .ToArray();
-
-                        //add the file name
-                        queryResults.FileNames.Add(file.Name);
-
-                        var elements = items
-                            .Select(g => g.ToList())
-                            .ToList();
-
-                        if (!items.Any())
-                        {
-                            //add an empty matrix. This file has no matches.
-                            queryResults.Data.Add(new string[0, 0]);
-                            continue;
-                        }
-
-                        //create the matrix for this file
-                        var totalRows = elements[0].Count;
-                        var totalColumns = elements.Count;
-                        var matrix = new string[totalRows, totalColumns];
-
-                        for (var i = 0; i < totalRows; i++)
-                            for (var j = 0; j < totalColumns; j++)
-                                matrix[i, j] = elements[j][i];
-
-                        //add this matrix (file results) to the results (xpath query)
-                        queryResults.Data.Add(matrix);
+                        var doc = await GetXDocument(file).ConfigureAwait(false);
+                        elements = await doc.XPathSelectElements(xPath).OfType<XElement>().ToArrayAsync().ConfigureAwait(false);
+                        attributes = await doc.XPathSelectAttributes(xPath).ToArrayAsync().ConfigureAwait(false);
                     }
                     catch (Exception e)
                     {
                         Console.WriteLine($"{file.Name} -> Failed!. Error: {e.Message}");
                     }
+
+                    return (file.Name, elements, attributes);
+                });
+
+            var results = await Task.WhenAll(tasks).ConfigureAwait(false);
+
+            foreach (var (fileName, elements, attributes) in results)
+            {
+                var items = elements?.Union(attributes)
+                                     .GroupBy(e => new { e.Name, e.Value })
+                                     .ToList();
+
+                if (!queryResults.Headers.Any() && items?.Any() == true)
+                {
+                    queryResults.Headers = items.Select(e => e.Key.Name.LocalName).ToArray();
                 }
 
-                AssembleResults(queryResults, ShowFileName);
-                Console.WriteLine();
+                queryResults.FileNames.Add(fileName);
+
+                queryResults.Data.Add(
+                    items?.Select(g => g.Select(e => e.Value)
+                                         .ToArray())
+                          .DefaultIfEmpty(new string[0])
+                          .ToArray()
+                );
             }
 
-            return 0;
+            AssembleResults(queryResults, ShowFileName);
+            Console.WriteLine();
         }
+
+        return 0;
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine(ex);
+        return -1;
+    }
+}
 
         private static void AssembleResults(QueryResults queryResults, bool showFileName)
         {
